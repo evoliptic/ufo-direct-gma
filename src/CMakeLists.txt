@@ -18,7 +18,7 @@ pkg_check_modules(PCILIB pcitool>=0.2 REQUIRED)
 pkg_check_variable(ufo plugindir)
 pkg_check_variable(ufo kerneldir)
 
-list(APPEND ufofilter_LIBS ${PCILIB_LIBRARIES})
+set(UFO_LIBRARIES ${PCILIB_LIBRARIES})
 
 add_definitions("-std=c99 -Wall -Wextra -fPIC")
 add_definitions(-DG_LOG_DOMAIN="Ufo")
