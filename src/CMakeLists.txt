@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 2.6)
 
-set(ufofilter_SRCS)
+set(ufofilter_SRCS
+    ufo-direct-gma-task.c)
 
 file(GLOB ufofilter_KERNELS "kernels/*.cl")
 
@@ -13,28 +14,33 @@ find_package(OpenCL REQUIRED)
 find_package(PkgConfig REQUIRED)
 
 pkg_check_modules(UFO ufo>=${PKG_UFO_CORE_MIN_REQUIRED} REQUIRED)
+pkg_check_modules(PCILIB pcitool>=0.2 REQUIRED)
 pkg_check_variable(ufo plugindir)
 pkg_check_variable(ufo kerneldir)
 
+list(APPEND ufofilter_LIBS ${PCILIB_LIBRARIES})
 
-add_definitions("-std=c99 -pedantic -Wall -Wextra -fPIC")
+add_definitions("-std=c99 -Wall -Wextra -fPIC")
 add_definitions(-DG_LOG_DOMAIN="Ufo")
+add_definitions("-DHAVE_GMA
+                 -I$ENV{AMDAPPSDKROOT}/include
+                 -L$ENV{AMDAPPSDKROOT}/lib/x86_64")
 
 if (CMAKE_COMPILER_IS_GNUCC OR ("${CMAKE_C_COMPILER_ID}" STREQUAL "Clang"))
-    add_definitions("-Wcast-align -Wcast-qual -Winline -Wmissing-declarations "
+    add_definitions("-Wcast-align -Winline -Wmissing-declarations "
                     "-Wmissing-prototypes -Wnested-externs -Wno-long-long "
-                    "-Wno-missing-field-initializers -Wpointer-arith -Wno-unused-parameter"
+                    "-Wno-missing-field-initializers -Wno-unused-parameter"
                     "-Wredundant-decls -Wshadow -Wstrict-prototypes -Wwrite-strings")
 endif()
 
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}
                     ${OPENCL_INCLUDE_DIRS}
-                    ${UFO_INCLUDE_DIRS})
+                    ${UFO_INCLUDE_DIRS}
+                    ${PCILIB_INCLUDE_DIRS})
 
-
-link_directories(${UFO_LIBRARY_DIRS})
-
+link_directories(${UFO_LIBRARY_DIRS}
+                 ${PCILIB_LIBRARY_DIRS})
 
 foreach(_src ${ufofilter_SRCS})
     # find plugin suffix
