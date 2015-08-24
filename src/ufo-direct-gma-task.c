@@ -176,8 +176,7 @@ ufo_direct_gma_task_get_mode (UfoTask *task)
 }
 
 static void
-init_buffer_gma(UfoBuffer** buffer, cl_command_queue* command_queue){
-    gint init=42;
+init_buffer_gma(UfoBuffer** buffer, cl_command_queue* command_queue, gint init){
     ufo_buffer_init_gma(*buffer, &init, command_queue);
 }
 
@@ -246,7 +245,7 @@ get_dma_mode(UfoDirectGmaTaskPrivate *task_priv)
 
 static void
 get_directgma_mode(UfoDirectGmaTaskPrivate *task_priv){
-    if((task_priv->buffers*task_priv->multiple*task_priv->huge_page*4096)>SIZE_96_M){
+    if((task_priv->height*task_priv->width*4)>SIZE_96_M){
         task_priv->directgma_mode=1;
     }
     else task_priv->directgma_mode=0;
@@ -277,7 +276,7 @@ gpu_init_for_gma_buffers(UfoTask* task){
 
     for(i=0;i<task_priv->buffers;i++){
       task_priv->buffer_gma_addr[i]=create_gma_buffer(&(task_priv->buffers_gma[i]),task_priv,&busadresses[i]);
-      init_buffer_gma(&(task_priv->buffers_gma[i]), &(task_priv->command_queue));
+      init_buffer_gma(&(task_priv->buffers_gma[i]), &(task_priv->command_queue), 23);
     	if (task_priv->buffer_gma_addr[i]==0){
             pcilib_error("the buffer %i for directgma has not been allocated correctly\n");
             return 1;
@@ -314,7 +313,7 @@ gpu_init_for_output_mode0(UfoBuffer **buffer, cl_command_queue* command_queue, U
   busadress=malloc(sizeof(cl_bus_address_amd));
   ufo_buffer_set_location(*buffer,UFO_BUFFER_LOCATION_DEVICE_DIRECT_GMA);
   ufo_buffer_get_device_array_for_directgma(*buffer,&(task_priv->command_queue),task_priv->platform_id,busadress);
-  init_buffer_gma(buffer,&(task_priv->command_queue));
+  init_buffer_gma(buffer,&(task_priv->command_queue),42);
 
   task_priv->buffer_gma_addr[0]=busadress->surface_bus_address;
   for(j=1;j<task_priv->buffers;j++){
@@ -329,7 +328,7 @@ gpu_init_for_output( UfoBuffer **saving_buffers, cl_command_queue* command_queue
 
     ufo_buffer_set_location(*saving_buffers, UFO_BUFFER_LOCATION_DEVICE);
     ufo_buffer_get_device_array(*saving_buffers,command_queue);
-    init_buffer_gma(saving_buffers, command_queue);
+    init_buffer_gma(saving_buffers, command_queue,42);
 
 }
 
@@ -476,16 +475,14 @@ handshaking_dma(UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* task_priv, g
         if(err==CL_INVALID_VALUE) break;
         if (task_priv->board_gen==3){
             if(task_priv->desc[1] != 0){
-                if (task_priv->bus_addr[curbuf] == hwptr) {
+		    err=ufo_buffer_copy_for_directgma(task_priv->buffers_gma[curbuf],saving_buffers,(i*task_priv->buffers+curbuf),&(task_priv->command_queue));
                     break;
-                }
             }
         }
         else {
             if (task_priv->desc[2] != 0){
-                if (task_priv->bus_addr[curbuf] == hwptr) {
+		    err=ufo_buffer_copy_for_directgma(task_priv->buffers_gma[curbuf],saving_buffers,(i*task_priv->buffers+curbuf),&(task_priv->command_queue));
                     break;
-                }
             }
         }
         curptr = hwptr;
@@ -499,10 +496,12 @@ handshaking_dma_mode0(UfoDirectGmaTaskPrivate* task_priv)
 {
     guint i;
     guint32 curptr,hwptr, curbuf;
+    volatile void* bar= task_priv->bar;
+    uintptr_t offset = 0;
     i=0;
     curptr=0;
     curbuf=0;
-    while (i < 1) {
+    while (i < task_priv->multiple) {
         do {
             if(task_priv->board_gen==3)
                 hwptr = task_priv->desc[3];
@@ -510,6 +509,7 @@ handshaking_dma_mode0(UfoDirectGmaTaskPrivate* task_priv)
                 hwptr = task_priv->desc[4];
         } while (hwptr == curptr);
 	do {
+
             curbuf++;
             if (curbuf == task_priv->buffers) {
                 i++;
@@ -517,6 +517,17 @@ handshaking_dma_mode0(UfoDirectGmaTaskPrivate* task_priv)
                 if (i >= task_priv->multiple) break;
             }
         } while (task_priv->bus_addr[curbuf] != hwptr);
+
+        if (task_priv->board_gen==3){
+            if(task_priv->desc[1] != 0){
+                    break;
+            }
+        }
+        else {
+            if (task_priv->desc[2] != 0){
+                    break;
+            }
+        }
 
         curptr = hwptr;
     }
@@ -553,18 +564,19 @@ start_dma( UfoDirectGmaTaskPrivate* task_priv,struct timeval *start){
          if(task_priv->counter==1){
              WR(0x9040, 0x88000201);
              WR(0x9100, 0x00001000);
+	     printf("ipecamera and counter\n");
          }
          else if (task_priv->counter==0){
 	     WR(0x9000, 0);
 	     usleep(1000);
-         WR(0x9040,0xf);
+	     WR(0x9040,0xf);
 	     usleep(1000);
 	     WR(0x9160,0x0);
 	     usleep(1000);
 	     WR(0x9164,0x0);
 	     usleep(1000);
 	     WR(0x9168,task_priv->number_of_lines);
-	     usleep(1000);
++	     usleep(1000);
 	     WR(0x9170,1);
 	     usleep(1000);
 	     WR(0x9180,0);
@@ -573,7 +585,9 @@ start_dma( UfoDirectGmaTaskPrivate* task_priv,struct timeval *start){
          }
 	     
      }
-     else if(task_priv->counter==1){
+     
+     if(task_priv->counter==1){
+       printf("and counter\n");
          WR(0x9000, 0xff);
 	 WR(0x9000, 0x1);
      }
@@ -650,13 +664,13 @@ ufo_direct_gma_task_setup (UfoTask *task,
 
     get_directgma_mode(task_priv);
     
-    if(task_priv->directgma_mode==1){
-      if((err=gpu_init_for_gma_buffers(task))==1){
-          g_set_error (error, UFO_TASK_ERROR, UFO_TASK_ERROR_SETUP, "fail in gpu initialization");
+    if(task_priv->directgma_mode==1) err=gpu_init_for_gma_buffers(task);
+    else err=gpu_init_mode0(task);
+    if(err==1){
+            g_set_error (error, UFO_TASK_ERROR, UFO_TASK_ERROR_SETUP, "fail in gpu initialization");
 	  return;
       }
-    }
-    else gpu_init_mode0(task);
+ 
 
     pcilib_init_for_transfer(task_priv);
 
@@ -664,10 +678,8 @@ ufo_direct_gma_task_setup (UfoTask *task,
         g_set_error (error, UFO_TASK_ERROR, UFO_TASK_ERROR_SETUP, "PCIe not ready");
         return;
     }
-
     dma_conf(task_priv);
-    writing_dma_descriptors(task_priv);
-    
+    if(task_priv->directgma_mode==1) writing_dma_descriptors(task_priv);
 }
 
 static gboolean
@@ -686,11 +698,15 @@ ufo_direct_gma_task_generate (UfoTask *task,
     if(ok==task_priv->frames) return FALSE;    
 
     if(task_priv->directgma_mode==1) gpu_init_for_output(&output, &(task_priv->command_queue));
-    else gpu_init_for_output_mode0(&output,&(task_priv->command_queue),task_priv);
+    else {
+      gpu_init_for_output_mode0(&output,&(task_priv->command_queue),task_priv);
+      writing_dma_descriptors(task_priv);
+    }
 
     start_dma(task_priv, &start);
     if(task_priv->directgma_mode==1) handshaking_dma(output,task_priv, &buffers_completed);
     else handshaking_dma_mode0(task_priv);
+   
     stop_dma(&end, &perf_counter,task_priv->bar);
 
     if(task_priv->directgma_mode==0) buffers_completed=task_priv->buffers;
@@ -742,7 +758,12 @@ ufo_direct_gma_task_set_property (GObject *object,
             priv->buffers=g_value_get_uint(value);
             break;
         case PROP_COUNTER:
-            priv->counter=g_value_get_uint(value);
+            {
+	        guint counter;
+		counter=g_value_get_uint(value);
+	        if(counter != 0 && counter !=1) g_warning("counter can be 1 or 0");
+                priv->counter=g_value_get_uint(value);
+   	    }
             break;
         case PROP_PRINT_INDEX:
             priv->print_index=g_value_get_uint(value);
@@ -752,7 +773,6 @@ ufo_direct_gma_task_set_property (GObject *object,
             break;
         case PROP_START_INDEX:
             priv->start_index=g_value_get_uint64(value);
-	    printf("property : %lu\n",priv->start_index);
             break;
         case PROP_STOP_INDEX:
             priv->stop_index=g_value_get_uint64(value);
