@@ -20,6 +20,16 @@ pkg_check_variable(ufo kerneldir)
 
 set(UFO_LIBRARIES ${PCILIB_LIBRARIES})
 
+if(CMAKE_BUILD_TYPE MATCHES "Debug")
+    add_definitions(-DDEBUG)
+endif()
+if(CMAKE_BUILD_TYPE MATCHES "Debug2")
+    add_definitions(-DDEBUG -DDEBUG2)
+endif()
+if(CMAKE_BUILD_TYPE MATCHES "Performance")
+    add_definitions(-DPERF_MAX)
+endif()
+
 add_definitions("-std=c99 -Wall -Wextra -fPIC")
 add_definitions(-DG_LOG_DOMAIN="Ufo")
 add_definitions("-DHAVE_GMA
