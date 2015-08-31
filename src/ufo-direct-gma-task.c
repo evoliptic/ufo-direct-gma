@@ -17,6 +17,14 @@
  * License along with this library.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+
+/* ToDO:
+   -cf dma perf_counter and perf with lorenzo
+   -finish defines 
+   -add comments
+   -review
+*/
+
 #define _POSIX_C_SOURCE 200809L
 #define _BSD_SOURCE
 #define _XOPEN_SOURCE 700
@@ -121,6 +129,7 @@ struct _UfoDirectGmaTaskPrivate {
     guint mode;
     guint iterations;
     guint error;
+    guint nb_frames;
 };
 
 static void ufo_task_interface_init (UfoTaskIface *iface);
@@ -150,6 +159,7 @@ enum {
     PROP_PRINT_INDEX,
     PROP_GET_AP_SIZE,
     PROP_ITERATIONS,
+    PROP_NB_FRAMES,
     N_PROPERTIES
 };
 
@@ -232,7 +242,7 @@ verify_aperture_size(UfoDirectGmaTaskPrivate *task_priv)
         return 1;
     }
     
-    if((task_priv->width*task_priv->height*4)>aperture_size) task_priv->mode=1;
+    if((task_priv->width*task_priv->height*task_priv->nb_frames*4)>aperture_size) task_priv->mode=1;
     else task_priv->mode=0;
     
 #ifdef DEBUG
@@ -358,7 +368,7 @@ gpu_init_for_output( UfoBuffer **saving_buffers, UfoDirectGmaTaskPrivate* task_p
 
 #ifdef DEBUG
     int* results;
-    results=malloc(task_priv->multiple*task_priv->huge_page*task_priv->buffers*1024*sizeof(int));
+    results=malloc(task_priv->width*task_priv->height*task_priv->nb_frames*sizeof(int));
     printf("final buffer\n");
     ufo_buffer_read(*saving_buffers,results,&(task_priv->command_queue));
     if(task_priv->print_index==1) printf_with_index(task_priv->start_index,task_priv->stop_index,results);
@@ -812,6 +822,11 @@ ufo_direct_gma_task_setup (UfoTask *task,
     task_priv->context= ufo_resources_get_context(resources);
     ufo_get_platform_id_for_directgma(resources, &(task_priv->platform_id));
     
+    if(task_priv->frames==1){
+      task_priv->height*=task_priv->nb_frames;
+      task_priv->multiple*=task_priv->nb_frames;
+    }
+
     if((err=verify_aperture_size(task_priv))==1){
       task_priv->error=1;
       return;
@@ -981,6 +996,9 @@ ufo_direct_gma_task_set_property (GObject *object,
         case PROP_ITERATIONS:
             priv->iterations=g_value_get_uint(value);
             break;
+        case PROP_NB_FRAMES:
+            priv->nb_frames=g_value_get_uint(value);
+            break;
         default:
             G_OBJECT_WARN_INVALID_PROPERTY_ID (object, property_id, pspec);
             break;
@@ -1037,6 +1055,9 @@ ufo_direct_gma_task_get_property (GObject *object,
             break;
         case PROP_PRINT_INDEX:
             g_value_set_uint(value,priv->print_index);
+            break;
+        case PROP_NB_FRAMES:
+            g_value_set_uint(value,priv->nb_frames);
             break;
         case PROP_PRINT_COUNTER:
             g_value_set_uint(value,priv->print_counter);
@@ -1205,6 +1226,13 @@ ufo_direct_gma_task_class_init (UfoDirectGmaTaskClass *klass)
 			  1,2<<16,1,
 			  G_PARAM_READWRITE);
 
+    properties[PROP_NB_FRAMES]=
+        g_param_spec_uint("nb-frames",
+			  "number of frames",
+			  "number of frames",
+			  1,2<<16,1,
+			  G_PARAM_READWRITE);
+
     for (guint i = PROP_0 + 1; i < N_PROPERTIES; i++)
         g_object_class_install_property (oclass, i, properties[i]);
 
@@ -1216,10 +1244,10 @@ ufo_direct_gma_task_init(UfoDirectGmaTask *self)
 {
     self->priv = UFO_DIRECT_GMA_TASK_GET_PRIVATE(self);
     self->priv->tlp_size=32;
-    self->priv->huge_page=1000;
+    self->priv->huge_page=1200;
     self->priv->multiple=2;
-    self->priv->height=8192;
-    self->priv->width=8000;
+    self->priv->height=3840;
+    self->priv->width=5120;
     self->priv->frames=1;
     self->priv->buffers=8;
     self->priv->counter=0;
@@ -1232,4 +1260,5 @@ ufo_direct_gma_task_init(UfoDirectGmaTask *self)
     self->priv->print_index=0;
     self->priv->get_ap_size=0;
     self->priv->iterations=1;
+    self->priv->nb_frames=1;
 }
