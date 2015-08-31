@@ -86,6 +86,8 @@
 #define NUMBER_FRAMES 0x9170
 #define ADD_NUMBER_OF_TRIGGERS 0x9180
 
+#define NB_ROWS 3840
+
 struct _UfoDirectGmaTaskPrivate {
     gboolean foo;
     guint huge_page;
@@ -199,6 +201,7 @@ init_buffer_gma(UfoBuffer** buffer, cl_command_queue* command_queue, int init){
 static void 
 printf_with_index(guint start, guint stop, int* buffer){
     guint i;
+    printf("index print : %i %i\n",start,stop);
     for(i=start;i<stop;i++) printf("%x |",buffer[i]);
     printf("\n");
 }
@@ -279,7 +282,6 @@ get_streaming(UfoDirectGmaTaskPrivate *task_priv)
 static int
 gpu_init(UfoTask* task)
 {
-    GTimer *timer = g_timer_new ();
   cl_bus_address_amd* busadresses; 
   guint i;
     UfoGpuNode *node;
@@ -312,7 +314,7 @@ gpu_init(UfoTask* task)
 #endif
 
 #ifdef DEBUG
-      ufo_buffer_read(task_priv->buffers_amd[i],results,&(task_priv->command_queue));
+    ufo_buffer_read(task_priv->buffers_gma[i],results,&(task_priv->command_queue));
     printf("\n buffer directgma %i\n",i);
     if(task_priv->print_index==1) printf_with_index(task_priv->start_index,task_priv->stop_index,results);
 #endif
@@ -324,9 +326,6 @@ gpu_init(UfoTask* task)
 #ifdef DEBUG
     free(results);
 #endif
-    g_timer_stop (timer);
-    g_print ("gpuinit=%fs\n", g_timer_elapsed (timer, NULL));
-    g_timer_destroy (timer);
     return 0;
 }    
 
@@ -368,23 +367,23 @@ gpu_init_for_output( UfoBuffer **saving_buffers, UfoDirectGmaTaskPrivate* task_p
 }
 
 static void
-gpu_init_for_output_mode0( UfoBuffer **saving_buffers, cl_command_queue* command_queue, UfoDirectGmaTaskPrivate* task_priv)
+gpu_init_for_output_mode0( UfoBuffer **saving_buffers, UfoDirectGmaTaskPrivate* task_priv)
   {
 guint j;
 cl_bus_address_amd busaddress;
 
     ufo_buffer_set_location(*saving_buffers, UFO_BUFFER_LOCATION_DEVICE_DIRECT_GMA);
-    ufo_buffer_get_device_array_for_directgma(*saving_buffers,command_queue,task_priv->platform_id,&busaddress);
+    ufo_buffer_get_device_array_for_directgma(*saving_buffers,&(task_priv->command_queue),task_priv->platform_id,&busaddress);
 
 #ifndef PERF_MAX
-    init_buffer_gma(saving_buffers, command_queue, 69);
+    init_buffer_gma(saving_buffers, &(task_priv->command_queue), 69);
 #endif
 
 #ifdef DEBUG
     int* results;
     results=malloc(task_priv->multiple*task_priv->huge_page*task_priv->buffers*1024*sizeof(int));
     printf("final buffer\n");
-    ufo_buffer_read(*saving_buffers,results,command_queue);
+    ufo_buffer_read(*saving_buffers,results,&(task_priv->command_queue));
     if(task_priv->print_index==1) printf_with_index(task_priv->start_index,task_priv->stop_index,results);
     free(results);
 #endif
@@ -397,7 +396,7 @@ cl_bus_address_amd busaddress;
     for(j=1;j<task_priv->buffers;j++){
       task_priv->buffer_gma_addr[j]=task_priv->buffer_gma_addr[j-1]+4096*task_priv->huge_page;
 #ifdef DEBUG
-      printf("gma buffer %j addr: %lu\n",j,task_priv->buffer_gma_addr[j]);
+      printf("gma buffer %u addr: %lu\n",j,task_priv->buffer_gma_addr[j]);
 #endif
     }
 }
@@ -492,45 +491,10 @@ pcilib_init_for_transfer(UfoDirectGmaTaskPrivate* task_priv){
     task_priv->desc = (uint32_t*)pcilib_kmem_get_block_ua(task_priv->pci, kdesc, 0);
     memset((void*)task_priv->desc, 0, 5*sizeof(uint32_t));
 #ifdef DEBUG
-    printf("bar debut: %p\n",bar);
+        printf("bar debut: %p\n",task_priv->bar);
 #endif
 }
 
-/*
-static void
-writing_dma_descriptors(glong* buffer_gma_addr,uintptr_t kdesc_bus,volatile void* bar, uintptr_t *bus_addr, UfoDirectGmaTaskPrivate* task_priv){
-    uintptr_t offset = 0;
-    guint j;
-    //    bar=task_priv->bar;
-
-#ifdef DEBUG
-    printf("Writing SW Read Descriptor\n");
-    printf("bar adress: %p\n",bar);
-    printf("nb buffers: %i\n",task_priv->buffers);
-#endif
-
-    WR(LAST_REG_READ_DRIVER, task_priv->buffers-1);
-
-#ifdef DEBUG
-    printf("Writing the Descriptor Threshold\n");
-#endif
-
-    WR(THRESHOLD_REG, DESC_THRESHOLD);
-
-    WR(UPDATE_REG, kdesc_bus);
-    usleep(100000);
-    for (j = 0; j < task_priv->buffers; j++ ) {
-      bus_addr[j]=buffer_gma_addr[j];
-        usleep(1000);
-#ifdef DEBUG
-    printf("Writing descriptor num. %i: \t %08lx \n", j, bus_addr[j]);
-#endif
-
-        WR(DESCRIPTOR_MEMORY, bus_addr[j]);
-    }
-
-
-    }*/
 static void
 writing_dma_descriptors(UfoDirectGmaTaskPrivate* task_priv){
     uintptr_t offset = 0;
@@ -568,11 +532,12 @@ writing_dma_descriptors(UfoDirectGmaTaskPrivate* task_priv){
 
 
 static void
-handshaking_dma(UfoBuffer** buffers_gma, UfoBuffer* saving_buffers, volatile uint32_t *desc,volatile void* bar, cl_command_queue* command_queue , uintptr_t* bus_addr, UfoDirectGmaTaskPrivate* task_priv, guint* buffers_completed){
+handshaking_dma(UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* task_priv, guint* buffers_completed){
  guint i;
  uintptr_t offset = 0;
  guint32 curptr,hwptr, curbuf;
  gint err;
+ volatile void* bar= task_priv->bar;
 
 #ifdef DEBUG2
  int* results;
@@ -586,23 +551,23 @@ handshaking_dma(UfoBuffer** buffers_gma, UfoBuffer* saving_buffers, volatile uin
  while (i < task_priv->multiple) {
      do {
          if(task_priv->board_gen==3)
-             hwptr = desc[3];
+             hwptr = task_priv->desc[3];
          else
-             hwptr = desc[4];
+             hwptr = task_priv->desc[4];
      } while (hwptr == curptr);
 
      do {    
-         err=ufo_buffer_copy_for_directgma(buffers_gma[curbuf],saving_buffers,(i*task_priv->buffers+curbuf),command_queue);
+       err=ufo_buffer_copy_for_directgma(task_priv->buffers_gma[curbuf],saving_buffers,(i*task_priv->buffers+curbuf),&(task_priv->command_queue));
 #ifdef DEBUG2
          printf("loop %i with curbuf %i\n",i,curbuf);
-         ufo_buffer_read(buffers_gma[curbuf],results,command_queue);
+         ufo_buffer_read(task_priv->buffers_gma[curbuf],results,&(task_priv->command_queue));
          if(task_priv->print_index==1) printf_with_index(task_priv->start_index,task_priv->stop_index,results);
 #endif
-         if(err==-30) break;
+         if(err==CL_INVALID_VALUE) break;
          if(task_priv->streaming==1){
              if (i < (task_priv->multiple-1) || (i==(task_priv->multiple-1) && curbuf<1))
-                 if (desc[1] == 0)
-                     WR(DESCRIPTOR_MEMORY, bus_addr[curbuf]);
+                 if (task_priv->desc[1] == 0)
+                     WR(DESCRIPTOR_MEMORY, task_priv->bus_addr[curbuf]);
          }
 
          curbuf++;
@@ -611,17 +576,17 @@ handshaking_dma(UfoBuffer** buffers_gma, UfoBuffer* saving_buffers, volatile uin
              curbuf = 0;
              if (i >= task_priv->multiple) break;
          }
-     } while (bus_addr[curbuf] != hwptr);
+     } while (task_priv->bus_addr[curbuf] != hwptr);
 
-     if(err==-30) break;
+     if(err==CL_INVALID_VALUE) break;
      if(task_priv->board_gen==3){                 
-         if (desc[1] != 0){
-             err=ufo_buffer_copy_for_directgma(buffers_gma[curbuf],saving_buffers,(i*task_priv->buffers+curbuf),command_queue);
+         if (task_priv->desc[1] != 0){
+	   err=ufo_buffer_copy_for_directgma(task_priv->buffers_gma[curbuf],saving_buffers,(i*task_priv->buffers+curbuf),&(task_priv->command_queue));
              break;
          }
      }else {   
-         if (desc[2] != 0){
-             if (bus_addr[curbuf] == hwptr) {
+         if (task_priv->desc[2] != 0){
+             if (task_priv->bus_addr[curbuf] == hwptr) {
                  break;
              }
          }
@@ -630,7 +595,7 @@ handshaking_dma(UfoBuffer** buffers_gma, UfoBuffer* saving_buffers, volatile uin
  }
 
  g_timer_stop (timer2);
- g_print ("transfer: %fs\n", g_timer_elapsed (timer2, NULL));
+ if(task_priv->print_perf==1) g_print ("transfer: %fs\n", g_timer_elapsed (timer2, NULL));
  g_timer_destroy (timer2);
 
  if(curbuf!=0) *buffers_completed=i*task_priv->buffers+curbuf;
@@ -641,29 +606,30 @@ handshaking_dma(UfoBuffer** buffers_gma, UfoBuffer* saving_buffers, volatile uin
 }
 
 static void
-handshaking_dma_mode0(UfoBuffer* saving_buffers, volatile uint32_t *desc,volatile void* bar, cl_command_queue* command_queue , uintptr_t* bus_addr, UfoDirectGmaTaskPrivate* task_priv, guint* buffers_completed){
+handshaking_dma_mode0(UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* task_priv, guint* buffers_completed){
  guint i;
  uintptr_t offset = 0;
  guint32 curptr,hwptr, curbuf;
+ volatile void* bar=task_priv->bar;
 
     i=0;
     curptr=0;
     curbuf=0;
     GTimer *timer = g_timer_new ();
-    while (i < 2) {
+    while (i < 3) {
         do {
 	  if(task_priv->board_gen==3)
-                hwptr = desc[3];
+                hwptr = task_priv->desc[3];
 	  else
-                hwptr = desc[4];
+                hwptr = task_priv->desc[4];
         } while (hwptr == curptr);
 
         do {    
 
 	if(task_priv->streaming==1){
 	  if (curbuf<1)
-	    if (desc[1] == 0)
-              WR(DESCRIPTOR_MEMORY, bus_addr[curbuf]);
+	    if (task_priv->desc[1] == 0)
+              WR(DESCRIPTOR_MEMORY, task_priv->bus_addr[curbuf]);
 	}
             
             curbuf++;
@@ -672,24 +638,24 @@ handshaking_dma_mode0(UfoBuffer* saving_buffers, volatile uint32_t *desc,volatil
                 curbuf = 0;
                 if (i >= task_priv->multiple) break;
             }
-        } while (bus_addr[curbuf] != hwptr);
+        } while (task_priv->bus_addr[curbuf] != hwptr);
 	
 	if(task_priv->board_gen==3){                 
-	  if (desc[1] != 0){
+	  if (task_priv->desc[1] != 0){
 	      break;
 	  }
 	}else {   
-	    if (desc[2] != 0){
-	      if (bus_addr[curbuf] == hwptr) {
+	    if (task_priv->desc[2] != 0){
+	      if (task_priv->bus_addr[curbuf] == hwptr) {
 		break;
 	      }
 	    }
 	}
 	  curptr = hwptr;
     }
-
+    
   g_timer_stop (timer);
-  g_print ("transfer: %fs\n", g_timer_elapsed (timer, NULL));
+  if(task_priv->print_perf==1) g_print ("transfer: %fs\n", g_timer_elapsed (timer, NULL));
   g_timer_destroy (timer);
   if(curbuf!=0) *buffers_completed=curbuf;
   else *buffers_completed=curbuf-1;
@@ -710,40 +676,42 @@ stop_dma(struct timeval *end,gfloat* perf_counter,volatile void* bar){
 }
 
 static void
-free_and_close(pcilib_t *pci,volatile void* bar,UfoBuffer **buffers_gma, uintptr_t* bus_addr, UfoDirectGmaTaskPrivate* task_priv, glong* addresses){
+free_and_close( UfoDirectGmaTaskPrivate* task_priv){
   guint j;
-    free(bus_addr);
+    free(task_priv->bus_addr);
     for(j=0;j<task_priv->buffers;j++)
-        g_object_unref(buffers_gma[j]);
-    free(addresses);
-    pcilib_disable_irq(pci, 0);
-    pcilib_unmap_bar(pci, BAR, bar);
-    pcilib_close(pci);
+        g_object_unref(task_priv->buffers_gma[j]);
+    free(task_priv->buffer_gma_addr);
+    pcilib_disable_irq(task_priv->pci, 0);
+    pcilib_unmap_bar(task_priv->pci, BAR, task_priv->bar);
+    pcilib_close(task_priv->pci);
 }
 
 static void
-free_and_close_mode0(pcilib_t *pci,volatile void* bar, uintptr_t* bus_addr, UfoDirectGmaTaskPrivate* task_priv, glong* addresses){
-    free(bus_addr);
-    free(addresses);
-    pcilib_disable_irq(pci, 0);
-    pcilib_unmap_bar(pci, BAR, bar);
-    pcilib_close(pci);
+free_and_close_mode0(UfoDirectGmaTaskPrivate* task_priv){
+    free(task_priv->bus_addr);
+    free(task_priv->buffer_gma_addr);
+    pcilib_disable_irq(task_priv->pci, 0);
+    pcilib_unmap_bar(task_priv->pci, BAR,task_priv->bar);
+    pcilib_close(task_priv->pci);
 }
 
 
 
 static void
-start_dma(volatile void* bar, UfoDirectGmaTaskPrivate* task_priv){
+start_dma(UfoDirectGmaTaskPrivate* task_priv){
      guintptr offset=0;
      gint nb_frames;
      gint nb_rows;
+     volatile void* bar=task_priv->bar;
+
 #ifdef DEBUG
      printf("putting data generator\n");
      printf("frames %i counter %i\n",task_priv->frames, task_priv->counter);
 #endif
     if(task_priv->frames==1){
-      nb_frames=task_priv->height/3840;
-      nb_rows=3840;
+      nb_frames=task_priv->height/NB_ROWS;
+      nb_rows=NB_ROWS;
        WR(ENABLE_COUNTER, 0x0);
        usleep(100);
 
@@ -820,11 +788,11 @@ research_data_fail_counter(int* buffer, UfoDirectGmaTaskPrivate* task_priv){
 }
 
 static void
-print_results(cl_command_queue* cmd_queue, UfoBuffer* buffer, UfoDirectGmaTaskPrivate* task_priv){
+print_results(UfoBuffer* buffer, UfoDirectGmaTaskPrivate* task_priv){
     int* results;
     results=malloc(task_priv->multiple*task_priv->huge_page*task_priv->buffers*1024*sizeof(int));
     printf("results: \n");
-    ufo_buffer_read(buffer,results,cmd_queue);
+    ufo_buffer_read(buffer,results,&(task_priv->command_queue));
     if(task_priv->print_counter==1) research_data_fail_counter(results, task_priv);
     if(task_priv->print_index==1) printf_with_index(task_priv->start_index,task_priv->stop_index,results);
     free(results);
@@ -885,9 +853,8 @@ ufo_direct_gma_task_setup (UfoTask *task,
     dma_conf(task_priv);
 
     if(task_priv->mode==1){
-      //    writing_dma_descriptors(task_priv->buffer_gma_addr, task_priv->kdesc_bus,task_priv->bar, task_priv->bus_addr, task_priv);
       writing_dma_descriptors(task_priv);
-      start_dma(task_priv->bar,task_priv);
+      start_dma(task_priv);
     }
 
 }
@@ -919,13 +886,12 @@ ufo_direct_gma_task_generate (UfoTask *task,
       clEnqueueReadBuffer (task_priv->command_queue, foo, CL_TRUE, 0, 1, &baz, 0, NULL, NULL);
 
       gettimeofday(&start,NULL);
-      handshaking_dma(task_priv->buffers_gma, output, task_priv->desc,task_priv->bar,&(task_priv->command_queue),task_priv->bus_addr,task_priv, &buffers_completed);
+      handshaking_dma(output, task_priv, &buffers_completed);
     }else{
-       gpu_init_for_output_mode0(&output,&(task_priv->command_queue),task_priv);
-       //writing_dma_descriptors(task_priv->buffer_gma_addr, task_priv->kdesc_bus,task_priv->bar, task_priv->bus_addr, task_priv);
+       gpu_init_for_output_mode0(&output,task_priv);
        writing_dma_descriptors(task_priv);
-       start_dma(task_priv->bar,task_priv);
-       handshaking_dma_mode0(output, task_priv->desc,task_priv->bar, &(task_priv->command_queue), task_priv->bus_addr, task_priv, &buffers_completed);
+       start_dma(task_priv);
+       handshaking_dma_mode0(output, task_priv, &buffers_completed);
     }
       
     stop_dma(&end, &perf_counter,task_priv->bar);
@@ -935,12 +901,7 @@ ufo_direct_gma_task_generate (UfoTask *task,
 #endif
 
     if(task_priv->print_perf==1) perf(start,end,perf_counter, task_priv, buffers_completed);
-    if(task_priv->print_counter==1 || task_priv->print_index==1) print_results(&(task_priv->command_queue),output, task_priv);
-
-#ifndef PERF_MAX
-    if(task_priv->mode==1) free_and_close(task_priv->pci,task_priv->bar,task_priv->buffers_gma,task_priv->bus_addr,task_priv,task_priv->buffer_gma_addr);
-    else free_and_close_mode0(task_priv->pci,task_priv->bar,task_priv->bus_addr,task_priv,task_priv->buffer_gma_addr);
-#endif
+    if(task_priv->print_counter==1 || task_priv->print_index==1) print_results(output, task_priv);
 
     if(task_priv->counter==1) ufo_buffer_convert(output,UFO_BUFFER_DEPTH_32S);
 
@@ -1095,7 +1056,14 @@ ufo_direct_gma_task_get_property (GObject *object,
 static void
 ufo_direct_gma_task_finalize (GObject *object)
 {
-    G_OBJECT_CLASS (ufo_direct_gma_task_parent_class)->finalize (object);
+  UfoDirectGmaTaskPrivate* task_priv;
+  task_priv= UFO_DIRECT_GMA_TASK_GET_PRIVATE(object);
+
+  if(task_priv->mode==1) free_and_close(task_priv);
+  else free_and_close_mode0(task_priv);
+  
+
+  G_OBJECT_CLASS (ufo_direct_gma_task_parent_class)->finalize (object);
 }
 
 static void
