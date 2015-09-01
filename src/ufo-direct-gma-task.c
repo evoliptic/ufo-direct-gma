@@ -972,8 +972,6 @@ ufo_direct_gma_task_generate (UfoTask *task,
     gfloat perf_counter;
     guint buffers_completed;
     UfoDirectGmaTaskPrivate *task_priv;
-    cl_mem foo;
-    gchar baz;
 
     task_priv= UFO_DIRECT_GMA_TASK_GET_PRIVATE(task);
 
@@ -983,16 +981,13 @@ ufo_direct_gma_task_generate (UfoTask *task,
     if(task_priv->mode==1){
 
       gpu_init_for_output(&output,task_priv);
-
-      foo = ufo_buffer_get_device_array (output, task_priv->command_queue);
-      clEnqueueReadBuffer (task_priv->command_queue, foo, CL_TRUE, 0, 1, &baz, 0, NULL, NULL);
-
       gettimeofday(&start,NULL);
       handshaking_dma(output, task_priv, &buffers_completed);
     }else{
        gpu_init_for_output_mode0(&output,task_priv);
        writing_dma_descriptors(task_priv);
        start_dma(task_priv);
+       gettimeofday(&start,NULL);
        handshaking_dma_mode0(output, task_priv, &buffers_completed);
     }
       
