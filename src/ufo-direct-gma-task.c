@@ -20,7 +20,6 @@
 
 /* ToDO:
    -cf dma perf_counter and perf with lorenzo
-   -finish defines 
    -add comments
    -review
 */
@@ -65,6 +64,9 @@
 #define USE PCILIB_KMEM_USE(PCILIB_KMEM_USE_USER, 2)
 #define DESC_THRESHOLD  1
 
+/**
+ * defines for aperture size of GPU
+ */
 #define SIZE_128_M 128000000
 #define SIZE_96_M 96000000
 
@@ -72,9 +74,19 @@
 
 #define FPGA_CLOCK 250
 
+/**
+ * macro to write to a given adress in the FPGA
+ */
 #define WR(addr, value) { *(uint32_t*)(bar + addr + offset) = value; }
+
+/**
+ * macro to read a register from a register
+ */
 #define RD(addr, value) { value = *(uint32_t*)(bar + addr + offset); }
 
+/**
+ * list of registers used in the FPGA
+ */
 #define RESET_DMA 0x00
 #define DMA_START 0x04
 #define PACKET_PARAM 0x0C
@@ -98,7 +110,7 @@
 
 struct _UfoDirectGmaTaskPrivate {
     gboolean foo;
-    guint huge_page;
+    guint huge_page; 
     guint tlp_size;
     guint multiple;
     guint buffers;
@@ -203,11 +215,18 @@ ufo_direct_gma_task_get_mode (UfoTask *task)
   return UFO_TASK_MODE_GENERATOR | UFO_TASK_MODE_GPU ;
 }
 
+
+/**
+ * function to initialize a cl_meme buffer
+ */
 static void
 init_buffer_gma(UfoBuffer** buffer, cl_command_queue* command_queue, int init){
     ufo_buffer_init_gma(*buffer, &init, command_queue);
 }
 
+/**
+ * function to print the values of the given buffer between start and stop
+ */
 static void 
 printf_with_index(guint start, guint stop, int* buffer){
     guint i;
@@ -216,13 +235,17 @@ printf_with_index(guint start, guint stop, int* buffer){
     printf("\n");
 }
 
+/**
+ * this function get the aperture size of the GPU in order to define the mode(direct or multiple buffering) of the transfer later
+ */
 static int 
 verify_aperture_size(UfoDirectGmaTaskPrivate *task_priv)
 {
     guint aperture_size;
 
     if(task_priv->get_ap_size==1){
-        FILE *fp= popen("aticonfig --get-pcs-key=MCIL,DMAOGLExtensionApertureMB | grep -o '[0-9][0-9])$' | grep -o '[0-9][0-9]' ", "r");
+      /* here, we get the aperture size automatically : the current version is not good and requires root. cf lorenzo afterwards*/
+     FILE *fp= popen("aticonfig --get-pcs-key=MCIL,DMAOGLExtensionApertureMB | grep -o '[0-9][0-9])$' | grep -o '[0-9][0-9]' ", "r");
         fscanf(fp,"%lu",&aperture_size);
         aperture_size*=1000000;
     }
@@ -236,13 +259,18 @@ verify_aperture_size(UfoDirectGmaTaskPrivate *task_priv)
 #ifdef DEBUG
     printf("aperture size obtained: %u \n",aperture_size);
 #endif
-        
+    
     if((task_priv->buffers*task_priv->huge_page*4096)>aperture_size){
         pcilib_error("the size for buffers for gma is higher than the aperture size\n");
         return 1;
     }
-    
-    if((task_priv->width*task_priv->height*task_priv->nb_frames*4)>aperture_size) task_priv->mode=1;
+
+    if((task_priv->buffers*task_priv->multiple*task_priv->huge_page)>1048576){
+      pcilib_error("the total size is too big\n");
+      return 1;
+    }
+
+    if((task_priv->width*task_priv->height*task_priv->nb_frames*2)>aperture_size) task_priv->mode=1;
     else task_priv->mode=0;
     
 #ifdef DEBUG
@@ -251,6 +279,9 @@ verify_aperture_size(UfoDirectGmaTaskPrivate *task_priv)
     return 0;
 }
 
+/**
+ * this function create a buffer for directgma in the multiple buffering mode
+ */
 static glong 
 create_gma_buffer(UfoBuffer** buffer,UfoDirectGmaTaskPrivate *task_priv,cl_bus_address_amd* busadress, cl_command_queue *command_queue){
 
@@ -261,11 +292,15 @@ create_gma_buffer(UfoBuffer** buffer,UfoDirectGmaTaskPrivate *task_priv,cl_bus_a
     return busadress->surface_bus_address;
 }
 
+/**
+ * this function gets the board generation, in order to have correct transfer parameters afterwards
+ */
 static void 
 get_board_generation(UfoDirectGmaTaskPrivate *task_priv)
 {
 
     if(task_priv->get_board_gen==1){
+            /* here, we get the board gen automatically : the current version is not good and requires root. cf lorenzo afterwards*/
         FILE *fp2= popen("pci -r 0x18 | grep -o '[0-9][0-9][0-9]$' ", "r");
         fscanf(fp2,"%i",&(task_priv->board_gen));
     }else if(task_priv->get_board_gen==0){
@@ -275,11 +310,15 @@ get_board_generation(UfoDirectGmaTaskPrivate *task_priv)
     }
 }
 
+/**
+ * this function gets if the streaming is activated for the board
+ */
 static void 
 get_streaming(UfoDirectGmaTaskPrivate *task_priv)
 {
 
     if(task_priv->get_streaming==1){
+            /* here, we get the streaming property automatically : the current version is not good and requires root. cf lorenzo afterwards*/
         FILE *fp3= popen("pci -r 0x18 | grep -o '^[0-9]' ", "r");
         fscanf(fp3,"%i",&(task_priv->streaming));
     }else if(task_priv->get_streaming==0){
@@ -289,6 +328,9 @@ get_streaming(UfoDirectGmaTaskPrivate *task_priv)
     }
 }
 
+/**
+ * gpu initialization in multiple buffering mode
+ */
 static int
 gpu_init(UfoTask* task)
 {
@@ -298,24 +340,18 @@ gpu_init(UfoTask* task)
     UfoDirectGmaTaskPrivate *task_priv;
     task_priv= UFO_DIRECT_GMA_TASK_GET_PRIVATE(task); 
     
+    /*get the gpu and the command queue*/
     node = UFO_GPU_NODE (ufo_task_node_get_proc_node (UFO_TASK_NODE (task)));
     task_priv->command_queue = ufo_gpu_node_get_cmd_queue (node);
    
     busadresses=malloc(task_priv->buffers*sizeof(cl_bus_address_amd));
-    if((task_priv->buffers*task_priv->multiple*task_priv->huge_page)>1048576){
-      pcilib_error("the total size is too big\n");
-      return 1;
-    }
 
-    if((task_priv->buffers*task_priv->huge_page*4096)>96000000){
-      pcilib_error("the size for buffers for gma is higher than the aperture size\n");
-      return 1;
-    }
-
-#ifdef DEBUG
+    //#ifdef DEBUG
     int* results;
     results=malloc(task_priv->huge_page*task_priv->buffers*1024*sizeof(int));
-#endif
+    //ndif
+
+    /* we create here a list of buffers, said directgma buffers, where the transfer will be done, and from where data will be copied to a final buffer*/
     for(i=0;i<task_priv->buffers;i++){
       task_priv->buffer_gma_addr[i]=create_gma_buffer(&(task_priv->buffers_gma[i]),task_priv,&busadresses[i],&(task_priv->command_queue));
 
@@ -323,8 +359,9 @@ gpu_init(UfoTask* task)
       init_buffer_gma(&(task_priv->buffers_gma[i]), &(task_priv->command_queue),42);
 #endif
 
+      //fdef DEBUG
+      ufo_buffer_read(task_priv->buffers_gma[i],results,&(task_priv->command_queue)); /**< this line has an impact on the data integrity, why, i don't know*/
 #ifdef DEBUG
-    ufo_buffer_read(task_priv->buffers_gma[i],results,&(task_priv->command_queue));
     printf("\n buffer directgma %i\n",i);
     if(task_priv->print_index==1) printf_with_index(task_priv->start_index,task_priv->stop_index,results);
 #endif
@@ -339,26 +376,29 @@ gpu_init(UfoTask* task)
     return 0;
 }    
 
+/**
+ * gpu iniitalization in the direct mode
+ */
 static int
 gpu_init_mode0(UfoTask* task){
     UfoGpuNode *node;
     UfoDirectGmaTaskPrivate *task_priv;
-
+    
+    /*get the gpu and the command queue*/
     task_priv= UFO_DIRECT_GMA_TASK_GET_PRIVATE(task); 
     node = UFO_GPU_NODE (ufo_task_node_get_proc_node (UFO_TASK_NODE (task)));
     task_priv->command_queue = ufo_gpu_node_get_cmd_queue (node);
    
-    if((task_priv->buffers*task_priv->multiple*task_priv->huge_page)>1048576){
-        pcilib_error("the total size is too big\n");
-        return 1;
-    }
     return 0;
 }
 
-
+/**
+ * output buffer initialization in multiple buffering mode
+ */
 static void
 gpu_init_for_output( UfoBuffer **saving_buffers, UfoDirectGmaTaskPrivate* task_priv)
 {
+  /* in this mode, we allocate an output buffer as a traditionnal opencl buffer, which size is equal to the size requested*/
     ufo_buffer_set_location(*saving_buffers, UFO_BUFFER_LOCATION_DEVICE);
     ufo_buffer_get_device_array(*saving_buffers,&(task_priv->command_queue));
 
@@ -376,12 +416,15 @@ gpu_init_for_output( UfoBuffer **saving_buffers, UfoDirectGmaTaskPrivate* task_p
 #endif
 }
 
+/**
+ * output buffer initialization in direct mode
+ */
 static void
 gpu_init_for_output_mode0( UfoBuffer **saving_buffers, UfoDirectGmaTaskPrivate* task_priv)
   {
 guint j;
 cl_bus_address_amd busaddress;
-
+/* in this mode, the output buffer is used directly for directgma, we allocate it for that so*/
     ufo_buffer_set_location(*saving_buffers, UFO_BUFFER_LOCATION_DEVICE_DIRECT_GMA);
     ufo_buffer_get_device_array_for_directgma(*saving_buffers,&(task_priv->command_queue),task_priv->platform_id,&busaddress);
 
@@ -397,7 +440,8 @@ cl_bus_address_amd busaddress;
     if(task_priv->print_index==1) printf_with_index(task_priv->start_index,task_priv->stop_index,results);
     free(results);
 #endif
-
+    
+    /* after the output buffer has been allocated, we get sub-buffers(buffers that are part of the output buffer) adresses from the output buffer, and register them for address table for the fpga*/
     task_priv->buffer_gma_addr[0]=busaddress.surface_bus_address;
 #ifdef DEBUG
       printf("gma buffer 0 addr: %lu  \n",task_priv->buffer_gma_addr[0]);
@@ -411,6 +455,9 @@ cl_bus_address_amd busaddress;
     }
 }
 
+/**
+ * function ot verify the board is ready for PCIe bus mastering
+ */
 static gint
 pcie_test(volatile void* bar){
     guintptr offset=0;
@@ -435,7 +482,9 @@ printf("\xE2\x9C\x93 \n");
     }
 }
 
-
+/**
+ * function to set up several parameters for dma
+ */
 static void
 dma_conf(UfoDirectGmaTaskPrivate* task_priv){
     guintptr offset=0;
@@ -471,6 +520,9 @@ dma_conf(UfoDirectGmaTaskPrivate* task_priv){
     WR(NB_DESCRIPTORS_FPGA, 0x00); 
 }
 
+/**
+ * driver initialization for directgma transfer
+ */
 static void
 pcilib_init_for_transfer(UfoDirectGmaTaskPrivate* task_priv){
     pcilib_kmem_handle_t *kdesc;
@@ -505,6 +557,10 @@ pcilib_init_for_transfer(UfoDirectGmaTaskPrivate* task_priv){
 #endif
 }
 
+
+/**
+ * function to write the adress table of the fpga
+ */
 static void
 writing_dma_descriptors(UfoDirectGmaTaskPrivate* task_priv){
     uintptr_t offset = 0;
@@ -540,7 +596,9 @@ writing_dma_descriptors(UfoDirectGmaTaskPrivate* task_priv){
 
 }
 
-
+/**
+ * the transfer itself in multiple buffering mode
+ */
 static void
 handshaking_dma(UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* task_priv, guint* buffers_completed){
  guint i;
@@ -559,14 +617,16 @@ handshaking_dma(UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* task_priv, g
  GTimer *timer2 = g_timer_new ();
 
  while (i < task_priv->multiple) {
+   /* get the state of dma*/
      do {
          if(task_priv->board_gen==3)
              hwptr = task_priv->desc[3];
          else
              hwptr = task_priv->desc[4];
      } while (hwptr == curptr);
-
+     /* retrieve driver latency*/
      do {    
+       /* copy from a directgma buffer to the output buffer, and wait for the copy to be finished, to make sure to not write again in a buffer not copied*/
        err=ufo_buffer_copy_for_directgma(task_priv->buffers_gma[curbuf],saving_buffers,(i*task_priv->buffers+curbuf),&(task_priv->command_queue));
 #ifdef DEBUG2
          printf("loop %i with curbuf %i\n",i,curbuf);
@@ -597,7 +657,8 @@ handshaking_dma(UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* task_priv, g
      }else {   
          if (task_priv->desc[2] != 0){
              if (task_priv->bus_addr[curbuf] == hwptr) {
-                 break;
+	       err=ufo_buffer_copy_for_directgma(task_priv->buffers_gma[curbuf],saving_buffers,(i*task_priv->buffers+curbuf),&(task_priv->command_queue));
+	       break;
              }
          }
      }
@@ -615,6 +676,9 @@ handshaking_dma(UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* task_priv, g
 #endif
 }
 
+/**
+ * the transfer itself in the direct mode
+ */
 static void
 handshaking_dma_mode0(UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* task_priv, guint* buffers_completed){
  guint i;
@@ -626,7 +690,9 @@ handshaking_dma_mode0(UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* task_p
     curptr=0;
     curbuf=0;
     GTimer *timer = g_timer_new ();
-    while (i < 3) {
+    
+    /* same as above, without any copy. the number 2 for i is to make sure the transfer is finished*/
+    while (i < 2) {
         do {
 	  if(task_priv->board_gen==3)
                 hwptr = task_priv->desc[3];
@@ -671,6 +737,9 @@ handshaking_dma_mode0(UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* task_p
   else *buffers_completed=curbuf-1;
 }
 
+/**
+ * function to stop the dma 
+ */
 static void
 stop_dma(struct timeval *end,gfloat* perf_counter,volatile void* bar){
  uintptr_t offset = 0;
@@ -680,11 +749,14 @@ stop_dma(struct timeval *end,gfloat* perf_counter,volatile void* bar){
     gettimeofday(end, NULL);
     WR(DMA_START, 0x00);
     usleep(100);
-    RD(PERF_COUNTER, *perf_counter);
+    RD(PERF_COUNTER, *perf_counter); /**< to see*/
     usleep(100);
     WR(RESET_DMA, 0x01);
 }
 
+/** 
+ * function to free the memory allocations and close driver in multiple buffering mode
+ */
 static void
 free_and_close( UfoDirectGmaTaskPrivate* task_priv){
   guint j;
@@ -697,6 +769,9 @@ free_and_close( UfoDirectGmaTaskPrivate* task_priv){
     pcilib_close(task_priv->pci);
 }
 
+/** 
+ * function to free the memory allocations and close driver in direct mode
+ */
 static void
 free_and_close_mode0(UfoDirectGmaTaskPrivate* task_priv){
     free(task_priv->bus_addr);
@@ -706,8 +781,9 @@ free_and_close_mode0(UfoDirectGmaTaskPrivate* task_priv){
     pcilib_close(task_priv->pci);
 }
 
-
-
+/**
+ * function to start the dma engine and the data generator, given the parameters
+ */
 static void
 start_dma(UfoDirectGmaTaskPrivate* task_priv){
      guintptr offset=0;
@@ -719,7 +795,9 @@ start_dma(UfoDirectGmaTaskPrivate* task_priv){
      printf("putting data generator\n");
      printf("frames %i counter %i\n",task_priv->frames, task_priv->counter);
 #endif
+     
     if(task_priv->frames==1){
+      /* here we get frames data generator option*/
       nb_frames=task_priv->height/NB_ROWS;
       nb_rows=NB_ROWS;
        WR(ENABLE_COUNTER, 0x0);
@@ -750,6 +828,7 @@ start_dma(UfoDirectGmaTaskPrivate* task_priv){
        usleep(100);
      }
      else if (task_priv->counter==1){
+       /* here we get counter data generator option*/
        WR(NUMBER_ROWS,0);
        usleep(100);
 
@@ -767,6 +846,9 @@ start_dma(UfoDirectGmaTaskPrivate* task_priv){
      WR(DMA_START, 0x1);
 }
 
+/**
+ * function to print the performance of the transfer (perf_counter on fpga not properly accurate)
+ */
 static void
 perf( struct timeval start, struct timeval end, float perf_counter, UfoDirectGmaTaskPrivate* task_priv, guint buffers_completed){
 
@@ -783,6 +865,9 @@ perf( struct timeval start, struct timeval end, float perf_counter, UfoDirectGma
      printf("PC side:\t\t%.3lf MB/s\n\n", 1000000. * size_mb / run_time );
 }
 
+/**
+ * this function verify that there is no jump in the counter
+ */
 static void
 research_data_fail_counter(int* buffer, UfoDirectGmaTaskPrivate* task_priv){
     guint i;
@@ -797,6 +882,9 @@ research_data_fail_counter(int* buffer, UfoDirectGmaTaskPrivate* task_priv){
     if(k==0) printf("no problem in data\n");
 }
 
+/**
+ * function to select what we want to print as result
+ */
 static void
 print_results(UfoBuffer* buffer, UfoDirectGmaTaskPrivate* task_priv){
     int* results;
@@ -852,7 +940,6 @@ ufo_direct_gma_task_setup (UfoTask *task,
 	return;
       }
     }else{
-      printf("mode 0\n");
       gpu_init_mode0(task);
     }
 
@@ -885,8 +972,6 @@ ufo_direct_gma_task_generate (UfoTask *task,
     gfloat perf_counter;
     guint buffers_completed;
     UfoDirectGmaTaskPrivate *task_priv;
-    cl_mem foo;
-    gchar baz;
 
     task_priv= UFO_DIRECT_GMA_TASK_GET_PRIVATE(task);
 
@@ -896,16 +981,13 @@ ufo_direct_gma_task_generate (UfoTask *task,
     if(task_priv->mode==1){
 
       gpu_init_for_output(&output,task_priv);
-
-      foo = ufo_buffer_get_device_array (output, task_priv->command_queue);
-      clEnqueueReadBuffer (task_priv->command_queue, foo, CL_TRUE, 0, 1, &baz, 0, NULL, NULL);
-
       gettimeofday(&start,NULL);
       handshaking_dma(output, task_priv, &buffers_completed);
     }else{
        gpu_init_for_output_mode0(&output,task_priv);
        writing_dma_descriptors(task_priv);
        start_dma(task_priv);
+       gettimeofday(&start,NULL);
        handshaking_dma_mode0(output, task_priv, &buffers_completed);
     }
       
@@ -1111,7 +1193,7 @@ ufo_direct_gma_task_class_init (UfoDirectGmaTaskClass *klass)
         g_param_spec_uint("huge-page",
 			  "number of pages of 4k in one dma buffer",
 			  "number of pages of 4k in one dma buffer",
-			  1,2<<16,1000,
+			  1,2<<16,1200,
 			  G_PARAM_READWRITE);
 
     properties[PROP_MULTIPLE]=
@@ -1132,14 +1214,14 @@ ufo_direct_gma_task_class_init (UfoDirectGmaTaskClass *klass)
         g_param_spec_uint("height",
 			  "height of the camera frame for image processing afterwards",
 			  "height of the camera frame for image processing afterwards",
-			  1,G_MAXUINT,8192,
+			  1,G_MAXUINT,3840,
               G_PARAM_READWRITE);
     
     properties[PROP_WIDTH]=
         g_param_spec_uint("width",
 			  "width of the camera frame for image processing afterwards",
 			  "width of the camera frame for image processing afterwards",
-			  1,2<<16,8000,
+			  1,G_MAXUINT,5120,
               G_PARAM_READWRITE);
 
     properties[PROP_FRAMES]=
@@ -1181,14 +1263,14 @@ ufo_direct_gma_task_class_init (UfoDirectGmaTaskClass *klass)
         g_param_spec_uint64("start-index",
               "starting index for printing results",
               "starting index for printing results",
-			  0,40000000,0,
+			  0,G_MAXUINT64,0,
               G_PARAM_READWRITE);
 
     properties[PROP_STOP_INDEX]=
         g_param_spec_uint64("stop-index",
 			    "ending index for printing results",
 			    "ending index for printing results",
-			    0,40000000,0,
+			    0,G_MAXUINT64,0,
 			    G_PARAM_READWRITE);
 
     properties[PROP_GET_BOARD_GEN]=
@@ -1230,7 +1312,7 @@ ufo_direct_gma_task_class_init (UfoDirectGmaTaskClass *klass)
         g_param_spec_uint("nb-frames",
 			  "number of frames",
 			  "number of frames",
-			  1,2<<16,1,
+			  1,80,1,
 			  G_PARAM_READWRITE);
 
     for (guint i = PROP_0 + 1; i < N_PROPERTIES; i++)
