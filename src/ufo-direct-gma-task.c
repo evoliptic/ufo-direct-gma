@@ -77,12 +77,12 @@
 /**
  * macro to write to a given adress in the FPGA
  */
-#define WR(addr, value) { *(uint32_t*)(bar + addr + offset) = value; }
+#define WR(addr, value) { *(uint32_t*)((bar) + (addr) + (offset)) = value; }
 
 /**
  * macro to read a register from a register
  */
-#define RD(addr, value) { value = *(uint32_t*)(bar + addr + offset); }
+#define RD(addr, value) { value = *(uint32_t*)((bar) + (addr) + (offset)); }
 
 /**
  * list of registers used in the FPGA
@@ -124,7 +124,7 @@ struct _UfoDirectGmaTaskPrivate {
     UfoBuffer **buffers_gma;
     cl_command_queue command_queue;
     guintptr *bus_addr;
-    volatile void* bar;
+    volatile gpointer bar;
     pcilib_t *pci;
     guintptr kdesc_bus;
     volatile guint32 *desc;
@@ -521,21 +521,12 @@ dma_conf (UfoDirectGmaTaskPrivate* priv)
 #ifdef DEBUG
     printf ("DMA: putting running mode\n");
 #endif
+
     if (priv->board_gen == 3) {
-        if (priv->tlp_size == 64) {
-            WR(PACKET_PARAM, 0x80040);
-        }
-        else if (priv->tlp_size == 32) {
-            WR(PACKET_PARAM, 0x80020);
-        }
+        WR(PACKET_PARAM, 0x80000 | priv->tlp_size);
     }
     else {
-        if (priv->tlp_size == 64) {
-            WR(PACKET_PARAM, 0x0040);
-        }
-        else if (priv->tlp_size == 32) {
-            WR(PACKET_PARAM, 0x0020);
-        }
+        WR(PACKET_PARAM, priv->tlp_size);
     }
 
     WR(NB_DESCRIPTORS_FPGA, 0x00);
@@ -1037,7 +1028,7 @@ ufo_direct_gma_task_generate (UfoTask *task,
     guint buffers_completed;
     UfoDirectGmaTaskPrivate *priv;
 
-    priv = UFO_DIRECT_GMA_TASK_GET_PRIVATE(task);
+    priv = UFO_DIRECT_GMA_TASK_GET_PRIVATE (task);
 
     if (priv->error == 1)
         return FALSE;
@@ -1050,7 +1041,7 @@ ufo_direct_gma_task_generate (UfoTask *task,
         gettimeofday (&start, NULL);
         handshaking_dma (output, priv, &buffers_completed);
     }
-    else{
+    else {
         gpu_init_for_output_mode0 (&output,priv);
         writing_dma_descriptors (priv);
         start_dma (priv);
