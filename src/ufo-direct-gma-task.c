@@ -612,8 +612,8 @@ writing_dma_descriptors (UfoDirectGmaTaskPrivate* priv)
 /**
  * the transfer itself in multiple buffering mode
  */
-static void
-handshaking_dma (UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* priv, guint* buffers_completed)
+static guint
+handshaking_dma (UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* priv)
 {
     guint i;
     uintptr_t offset = 0;
@@ -633,10 +633,7 @@ handshaking_dma (UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* priv, guint
     while (i < priv->multiple) {
         /* get the state of dma*/
         do {
-            if(priv->board_gen==3)
-                hwptr = priv->desc[3];
-            else
-                hwptr = priv->desc[4];
+            hwptr = priv->board_gen == 3 ? priv->desc[3] : priv->desc[4];
         }
         while (hwptr == curptr);
 
@@ -653,7 +650,7 @@ handshaking_dma (UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* priv, guint
             if (err == CL_INVALID_VALUE)
                 break;
 
-            if (priv->streaming==1) {
+            if (priv->streaming == 1) {
                 if (i < (priv->multiple-1) || (i == (priv->multiple-1) && curbuf < 1))
                     if (priv->desc[1] == 0)
                         WR(DESCRIPTOR_MEMORY, priv->bus_addr[curbuf]);
@@ -696,21 +693,18 @@ handshaking_dma (UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* priv, guint
 
     g_timer_destroy (timer2);
 
-    if (curbuf != 0)
-        *buffers_completed = i * priv->buffers + curbuf;
-    else
-        *buffers_completed = i * priv->buffers + curbuf - 1;
-
 #ifdef DEBUG2
     free(results);
 #endif
+
+    return curbuf != 0 ? i * priv->buffers + curbuf : i * priv->buffers + curbuf - 1;
 }
 
 /**
  * the transfer itself in the direct mode
  */
-static void
-handshaking_dma_mode0 (UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* priv, guint* buffers_completed)
+static guint
+handshaking_dma_mode0 (UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* priv)
 {
     guint i;
     uintptr_t offset = 0;
@@ -725,21 +719,16 @@ handshaking_dma_mode0 (UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* priv,
     /* same as above, without any copy. the number 2 for i is to make sure the transfer is finished*/
     while (i < 2) {
         do {
-            if (priv->board_gen==3)
-                hwptr = priv->desc[3];
-            else
-                hwptr = priv->desc[4];
+            hwptr = priv->board_gen == 3 ? priv->desc[3] : priv->desc[4];
         }
         while (hwptr == curptr);
 
         do {
-            if (priv->streaming == 1) {
-                if (curbuf < 1)
-                    if (priv->desc[1] == 0)
-                        WR (DESCRIPTOR_MEMORY, priv->bus_addr[curbuf]);
-            }
+            if ((priv->streaming == 1) && (curbuf < 1) && (priv->desc[1] == 0))
+                WR (DESCRIPTOR_MEMORY, priv->bus_addr[curbuf]);
 
             curbuf++;
+
             if (curbuf == priv->buffers) {
                 i++;
                 curbuf = 0;
@@ -749,18 +738,11 @@ handshaking_dma_mode0 (UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* priv,
         }
         while (priv->bus_addr[curbuf] != hwptr);
 
-        if (priv->board_gen==3){
-            if (priv->desc[1] != 0){
-                break;
-            }
-        }
-        else {
-            if (priv->desc[2] != 0){
-                if (priv->bus_addr[curbuf] == hwptr) {
-                    break;
-                }
-            }
-        }
+        if ((priv->board_gen == 3) && (priv->desc[1] != 0))
+            break;
+        else if ((priv->desc[2] != 0) && (priv->bus_addr[curbuf] == hwptr))
+            break;
+
         curptr = hwptr;
     }
 
@@ -771,10 +753,7 @@ handshaking_dma_mode0 (UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* priv,
 
     g_timer_destroy (timer);
 
-    if (curbuf != 0)
-        *buffers_completed = curbuf;
-    else
-        *buffers_completed = curbuf-1;
+    return curbuf != 0 ? curbuf : curbuf - 1;
 }
 
 /**
@@ -1039,14 +1018,14 @@ ufo_direct_gma_task_generate (UfoTask *task,
     if (priv->mode == 1) {
         gpu_init_for_output (&output, priv);
         gettimeofday (&start, NULL);
-        handshaking_dma (output, priv, &buffers_completed);
+        buffers_completed = handshaking_dma (output, priv);
     }
     else {
         gpu_init_for_output_mode0 (&output,priv);
         writing_dma_descriptors (priv);
         start_dma (priv);
         gettimeofday (&start, NULL);
-        handshaking_dma_mode0 (output, priv, &buffers_completed);
+        buffers_completed = handshaking_dma_mode0 (output, priv);
     }
 
     stop_dma (&end, &perf_counter, priv->bar);
