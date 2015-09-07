@@ -339,8 +339,8 @@ get_streaming(UfoDirectGmaTaskPrivate *priv)
 /**
  * gpu initialization in multiple buffering mode
  */
-static int
-gpu_init(UfoTask* task)
+static gboolean
+gpu_init (UfoTask* task)
 {
     cl_bus_address_amd* busadresses;
     guint i;
@@ -376,30 +376,31 @@ gpu_init(UfoTask* task)
 #endif
         if (priv->buffer_gma_addr[i] == 0) {
             pcilib_error ("the buffer %i for directgma has not been allocated correctly\n");
-            return 1;
+            return FALSE;
         }
     }
 #ifdef DEBUG
     free(results);
 #endif
-    return 0;
+
+    return TRUE;
 }
 
 /**
  * gpu iniitalization in the direct mode
  */
-static int
-gpu_init_mode0(UfoTask* task)
+static gboolean
+gpu_init_mode0 (UfoTask* task)
 {
     UfoGpuNode *node;
     UfoDirectGmaTaskPrivate *priv;
 
     /*get the gpu and the command queue*/
-    priv= UFO_DIRECT_GMA_TASK_GET_PRIVATE (task);
+    priv = UFO_DIRECT_GMA_TASK_GET_PRIVATE (task);
     node = UFO_GPU_NODE (ufo_task_node_get_proc_node (UFO_TASK_NODE (task)));
     priv->command_queue = ufo_gpu_node_get_cmd_queue (node);
 
-    return 0;
+    return TRUE;
 }
 
 /**
@@ -476,7 +477,7 @@ gpu_init_for_output_mode0 (UfoBuffer **saving_buffers, UfoDirectGmaTaskPrivate* 
 /**
  * function ot verify the board is ready for PCIe bus mastering
  */
-static gint
+static gboolean
 pcie_test (volatile gpointer bar)
 {
     guintptr offset = 0;
@@ -490,16 +491,18 @@ pcie_test (volatile gpointer bar)
     usleep(100000);
 
     RD(RESET_DMA, err);
+
     if (err == 335746816 || err == 335681280) {
 #ifdef DEBUG
         printf ("\xE2\x9C\x93 \n");
 #endif
-        return 0;
     }
     else {
         printf ("PCIe not ready!\n");
-        return 1;
+        return FALSE;
     }
+
+    return TRUE;
 }
 
 /**
@@ -976,6 +979,8 @@ ufo_direct_gma_task_setup (UfoTask *task,
     }
 
     if ((err = verify_aperture_size (priv))==1){
+        g_set_error (error, UFO_TASK_ERROR, UFO_TASK_ERROR_SETUP,
+                     "Could not verify aperture size");
         priv->error = 1;
         return;
     }
@@ -994,14 +999,10 @@ ufo_direct_gma_task_setup (UfoTask *task,
     printf("init gpu:...");
 #endif
 
-    if (priv->mode == 1) {
-        if ((err = gpu_init(task)) == 1) {
-            priv->error = 1;
-            return;
-        }
-    }
-    else {
-        gpu_init_mode0 (task);
+    if ((priv->mode == 1 && !gpu_init (task)) || (priv->mode == 0 && !gpu_init_mode0 (task))) {
+        g_set_error (error, UFO_TASK_ERROR, UFO_TASK_ERROR_SETUP, "Could not initialize GPU");
+        priv->error = 1;
+        return;
     }
 
 #ifdef DEBUG
@@ -1010,7 +1011,8 @@ ufo_direct_gma_task_setup (UfoTask *task,
 
     pcilib_init_for_transfer (priv);
 
-    if ((err = pcie_test (priv->bar)) == 1) {
+    if (!pcie_test (priv->bar)) {
+        g_set_error (error, UFO_TASK_ERROR, UFO_TASK_ERROR_SETUP, "pcie test failed");
         priv->error = 1;
         return;
     }
