@@ -20,7 +20,9 @@
 
 /* ToDO:
    -cf dma perf_counter and perf with lorenzo
-   -add comments
+   - auto-detect of streaming and board gen : lorenzo should update the firmware, so we keep at least the board gen thing.
+   -cf verifying the streaming -> if streaming is not activated on the firmware of the board, then this task should not work
+   -if NDA is signed with AMD, then it could be good to see on how getting the aperture automatically without being root
    -review
 */
 
@@ -130,8 +132,6 @@ struct _UfoDirectGmaTaskPrivate {
     volatile guint32 *desc;
     guint board_gen;
     guint get_board_gen;
-    guint streaming;
-    guint get_streaming;
     guint print_perf;
     guint print_index;
     guint print_counter;
@@ -164,7 +164,6 @@ enum {
     PROP_START_INDEX,
     PROP_STOP_INDEX,
     PROP_GET_BOARD_GEN,
-    PROP_GET_STREAMING,
     PROP_PRINT_PERF,
     PROP_PRINT_COUNTER,
     PROP_PRINT_INDEX,
@@ -304,13 +303,24 @@ create_gma_buffer (UfoBuffer** buffer, UfoDirectGmaTaskPrivate *priv, cl_bus_add
 static void
 get_board_generation(UfoDirectGmaTaskPrivate *priv)
 {
+  gint value;
+  volatile void* bar=priv->bar;
+  guintptr offset=0;
     if (priv->get_board_gen == 1) {
-        /* here, we get the board gen automatically : the current version is not good and requires root. cf lorenzo afterwards*/
-        FILE *fp2 = popen ("pci -r 0x18 | grep -o '[0-9][0-9][0-9]$' ", "r");
-        fscanf(fp2, "%i", &(priv->board_gen));
+        /* here, we get the board gen automatically : the current version is not good due to firmware. cf lorenzo afterwards*/
+
+
+	/*  int constant=1<<3;
+  RD(0x18,value);
+  if(value&constant) return TRUE;
+  else return FALSE;
+	*/
+      
     }
     else if(priv->get_board_gen == 0) {
         priv->board_gen = 3;
+	RD(0x18,value);
+	printf("value: %i\n", value);
     }
     else if(priv->get_board_gen == 2) {
         priv->board_gen = 2;
@@ -318,22 +328,19 @@ get_board_generation(UfoDirectGmaTaskPrivate *priv)
 }
 
 /**
- * this function gets if the streaming is activated for the board
+ * this function gets if the streaming is activated for the board, we should stop the program if not.
  */
-static void
-get_streaming(UfoDirectGmaTaskPrivate *priv)
+static gboolean
+verify_streaming(UfoDirectGmaTaskPrivate *priv)
 {
-    if(priv->get_streaming == 1) {
-        /* here, we get the streaming property automatically : the current version is not good and requires root. cf lorenzo afterwards*/
-        FILE *fp3= popen("pci -r 0x18 | grep -o '^[0-9]' ", "r");
-        fscanf(fp3,"%i",&(priv->streaming));
-    }
-    else if (priv->get_streaming == 0) {
-        priv->streaming = 1;
-    }
-    else if (priv->get_streaming == 2) {
-        priv->streaming = 0;
-    }
+  
+  volatile void* bar=priv->bar;
+  guintptr offset=0;
+  gint value;
+  int constant=1<<3;
+  RD(0x18,value);
+  if(value&constant) return TRUE;
+  else return FALSE;
 }
 
 /**
@@ -347,6 +354,7 @@ gpu_init (UfoTask* task)
     UfoGpuNode *node;
     UfoDirectGmaTaskPrivate *priv;
     priv= UFO_DIRECT_GMA_TASK_GET_PRIVATE(task);
+
 
     /*get the gpu and the command queue*/
     node = UFO_GPU_NODE (ufo_task_node_get_proc_node (UFO_TASK_NODE (task)));
@@ -650,8 +658,7 @@ handshaking_dma (UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* priv)
             if (err == CL_INVALID_VALUE)
                 break;
 
-            if (priv->streaming == 1) {
-                if (i < (priv->multiple-1) || (i == (priv->multiple-1) && curbuf < 1))
+	    if (i < (priv->multiple-1) || (i == (priv->multiple-1) && curbuf < 1)){
                     if (priv->desc[1] == 0)
                         WR(DESCRIPTOR_MEMORY, priv->bus_addr[curbuf]);
             }
@@ -724,7 +731,7 @@ handshaking_dma_mode0 (UfoBuffer* saving_buffers, UfoDirectGmaTaskPrivate* priv)
         while (hwptr == curptr);
 
         do {
-            if ((priv->streaming == 1) && (curbuf < 1) && (priv->desc[1] == 0))
+            if ((curbuf < 1) && (priv->desc[1] == 0))
                 WR (DESCRIPTOR_MEMORY, priv->bus_addr[curbuf]);
 
             curbuf++;
@@ -959,7 +966,6 @@ ufo_direct_gma_task_setup (UfoTask *task,
     priv->buffers_gma = malloc (priv->buffers * sizeof(UfoBuffer*));
     priv->bus_addr = malloc (priv->buffers * sizeof(uintptr_t));
     get_board_generation (priv);
-    get_streaming (priv);
 
 #ifdef DEBUG
     priv->print_perf = 1;
@@ -1102,9 +1108,6 @@ ufo_direct_gma_task_set_property (GObject *object,
         case PROP_GET_BOARD_GEN:
             priv->get_board_gen = g_value_get_uint(value);
             break;
-        case PROP_GET_STREAMING:
-            priv->get_streaming = g_value_get_uint(value);
-            break;
         case PROP_PRINT_PERF:
             priv->print_perf = g_value_get_uint(value);
             break;
@@ -1170,9 +1173,6 @@ ufo_direct_gma_task_get_property (GObject *object,
             break;
         case PROP_GET_BOARD_GEN:
             g_value_set_uint (value,priv->get_board_gen);
-            break;
-        case PROP_GET_STREAMING:
-            g_value_set_uint (value,priv->get_streaming);
             break;
         case PROP_PRINT_PERF:
             g_value_set_uint (value,priv->print_perf);
@@ -1323,13 +1323,6 @@ ufo_direct_gma_task_class_init (UfoDirectGmaTaskClass *klass)
 			  0, 2, 0,
 			  G_PARAM_READWRITE);
 
-    properties[PROP_GET_STREAMING]=
-        g_param_spec_uint("get-streaming",
-			  "parameter to define streaming for directgma",
-			  "parameter to define streaming for directgma",
-			  0, 2, 0,
-			  G_PARAM_READWRITE);
-
     properties[PROP_PRINT_PERF]=
         g_param_spec_uint("print-perf",
 			  "parameter to print performance or not",
@@ -1379,7 +1372,6 @@ ufo_direct_gma_task_init(UfoDirectGmaTask *self)
     self->priv->stop_index = 10;
     self->priv->start_index = 0;
     self->priv->get_board_gen = 0;
-    self->priv->get_streaming = 0;
     self->priv->print_perf = 0;
     self->priv->print_counter = 0;
     self->priv->print_index = 0;
