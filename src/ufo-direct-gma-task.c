@@ -131,7 +131,6 @@ struct _UfoDirectGmaTaskPrivate {
     guintptr kdesc_bus;
     volatile guint32 *desc;
     guint board_gen;
-    guint get_board_gen;
     guint print_perf;
     guint print_index;
     guint print_counter;
@@ -163,7 +162,6 @@ enum {
     PROP_COUNTER,
     PROP_START_INDEX,
     PROP_STOP_INDEX,
-    PROP_GET_BOARD_GEN,
     PROP_PRINT_PERF,
     PROP_PRINT_COUNTER,
     PROP_PRINT_INDEX,
@@ -306,25 +304,19 @@ get_board_generation(UfoDirectGmaTaskPrivate *priv)
   gint value;
   volatile void* bar=priv->bar;
   guintptr offset=0;
-    if (priv->get_board_gen == 1) {
-        /* here, we get the board gen automatically : the current version is not good due to firmware. cf lorenzo afterwards*/
 
-
-	/*  int constant=1<<3;
+  int compare=7;
+  
   RD(0x18,value);
-  if(value&constant) return TRUE;
-  else return FALSE;
-	*/
-      
-    }
-    else if(priv->get_board_gen == 0) {
-        priv->board_gen = 3;
-	RD(0x18,value);
-	printf("value: %i\n", value);
-    }
-    else if(priv->get_board_gen == 2) {
-        priv->board_gen = 2;
-    }
+
+  if(value!=18 && value!=19){
+    pcilib_warning("board generation can't be found automatically, switching to default gen3");
+    priv->board_gen=3;
+  }
+
+  int g=value&compare;
+  priv->board_gen=g;
+
 }
 
 /**
@@ -337,7 +329,7 @@ verify_streaming(UfoDirectGmaTaskPrivate *priv)
   volatile void* bar=priv->bar;
   guintptr offset=0;
   gint value;
-  int constant=1<<3;
+  int constant=1<<4;
   RD(0x18,value);
   if(value&constant) return TRUE;
   else return FALSE;
@@ -965,7 +957,6 @@ ufo_direct_gma_task_setup (UfoTask *task,
     priv->buffer_gma_addr = malloc (priv->buffers * sizeof(glong));
     priv->buffers_gma = malloc (priv->buffers * sizeof(UfoBuffer*));
     priv->bus_addr = malloc (priv->buffers * sizeof(uintptr_t));
-    get_board_generation (priv);
 
 #ifdef DEBUG
     priv->print_perf = 1;
@@ -986,6 +977,15 @@ ufo_direct_gma_task_setup (UfoTask *task,
 #endif
 
     pcilib_init_for_transfer (priv);
+    
+    if(verify_streaming(priv)==FALSE){
+       g_set_error (error, UFO_TASK_ERROR, UFO_TASK_ERROR_SETUP, "directgma only works with streaming enabled firmwareof ALPS platorm");
+       priv->error = 1;
+       return;
+    } 
+
+    get_board_generation (priv);
+
 
     if (!pcie_test (priv->bar)) {
         g_set_error (error, UFO_TASK_ERROR, UFO_TASK_ERROR_SETUP, "pcie test failed");
@@ -1105,9 +1105,6 @@ ufo_direct_gma_task_set_property (GObject *object,
         case PROP_STOP_INDEX:
             priv->stop_index = g_value_get_uint64(value);
             break;
-        case PROP_GET_BOARD_GEN:
-            priv->get_board_gen = g_value_get_uint(value);
-            break;
         case PROP_PRINT_PERF:
             priv->print_perf = g_value_get_uint(value);
             break;
@@ -1170,9 +1167,6 @@ ufo_direct_gma_task_get_property (GObject *object,
             break;
         case PROP_COUNTER:
             g_value_set_uint (value,priv->counter);
-            break;
-        case PROP_GET_BOARD_GEN:
-            g_value_set_uint (value,priv->get_board_gen);
             break;
         case PROP_PRINT_PERF:
             g_value_set_uint (value,priv->print_perf);
@@ -1316,13 +1310,6 @@ ufo_direct_gma_task_class_init (UfoDirectGmaTaskClass *klass)
                 0,G_MAXUINT64,0,
                 G_PARAM_READWRITE);
 
-    properties[PROP_GET_BOARD_GEN]=
-        g_param_spec_uint("get-board-gen",
-			  "parameter to define board gen for directgma",
-			  "parameter to define board gen for directgma",
-			  0, 2, 0,
-			  G_PARAM_READWRITE);
-
     properties[PROP_PRINT_PERF]=
         g_param_spec_uint("print-perf",
 			  "parameter to print performance or not",
@@ -1371,7 +1358,6 @@ ufo_direct_gma_task_init(UfoDirectGmaTask *self)
     self->priv->counter = 0;
     self->priv->stop_index = 10;
     self->priv->start_index = 0;
-    self->priv->get_board_gen = 0;
     self->priv->print_perf = 0;
     self->priv->print_counter = 0;
     self->priv->print_index = 0;
