@@ -271,8 +271,12 @@ verify_aperture_size (UfoDirectGmaTaskPrivate *priv)
         return 1;
     }
 
-    if ((priv->width * priv->height * priv->nb_frames * 2) > aperture_size)
+    /* in the case of frames, a frame is 37MB but with decode and such becomes 75MB, so the two factor*/
+    if ((priv->frames==1) && ((priv->width * priv->height * priv->nb_frames * 2) > aperture_size))
         priv->mode = 1;
+    /*in the case of counter, just do it normally*/
+    else if ((priv->counter==1) && ((priv->width * priv->height * priv->nb_frames) > aperture_size))
+        priv->mode=1;
     else
         priv->mode = 0;
 
@@ -354,10 +358,8 @@ gpu_init (UfoTask* task)
 
     busadresses = malloc(priv->buffers*sizeof(cl_bus_address_amd));
 
-    //#ifdef DEBUG
     int* results;
     results = malloc(priv->huge_page*priv->buffers*1024*sizeof(int));
-    //ndif
 
     /* we create here a list of buffers, said directgma buffers, where the transfer will be done, and from where data will be copied to a final buffer*/
     for (i = 0; i < priv->buffers; i++) {
@@ -367,8 +369,8 @@ gpu_init (UfoTask* task)
         init_buffer_gma (&(priv->buffers_gma[i]), &(priv->command_queue),42);
 #endif
 
-        //fdef DEBUG
         ufo_buffer_read (priv->buffers_gma[i], results, &(priv->command_queue)); /**< this line has an impact on the data integrity, why, i don't know*/
+
 #ifdef DEBUG
         printf("\n buffer directgma %i\n",i);
         if (priv->print_index == 1)
